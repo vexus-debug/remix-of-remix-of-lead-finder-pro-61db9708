@@ -145,41 +145,63 @@ async function scrapeEmailsFromWebsite(website: string): Promise<string | null> 
   return null;
 }
 
-// ScrapeGraphAI SearchScraper: AI web search using name + address + phone.
+// Fast lookup: Google results via SerpAPI (snippets from Instagram, Facebook, directories).
+async function findEmailsViaSerp(query: string): Promise<string[]> {
+  const key = process.env["SERPAPI_KEY"];
+  if (!key) return [];
+  try {
+    const url = `https://serpapi.com/search.json?engine=google&num=20&q=${encodeURIComponent(query)}&api_key=${key}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return [];
+    const json = await res.json();
+    return extractEmails(JSON.stringify(json?.organic_results ?? []) + JSON.stringify(json?.knowledge_graph ?? {}));
+  } catch (e) {
+    console.error("SerpAPI email lookup failed", e);
+    return [];
+  }
+}
+
+// Deep lookup: ScrapeGraphAI v2 search.
+async function findEmailsViaScrapeGraphV2(query: string): Promise<string[]> {
+  const key = process.env["SCRAPEGRAPH_API_KEY"];
+  if (!key) return [];
+  try {
+    const res = await fetch("https://v2-api.scrapegraphai.com/api/search", {
+      method: "POST",
+      signal: AbortSignal.timeout(45_000),
+      headers: { "SGAI-APIKEY": key, "Content-Type": "application/json" },
+      body: JSON.stringify({ query, numResults: 5 }),
+    });
+    if (!res.ok) {
+      console.error(`ScrapeGraph v2 failed [${res.status}]: ${(await res.text()).slice(0, 300)}`);
+      return [];
+    }
+    return extractEmails(JSON.stringify(await res.json()));
+  } catch (e) {
+    console.error("ScrapeGraph v2 lookup failed", e);
+    return [];
+  }
+}
+
 async function findEmailViaScrapeGraph(
   name: string,
   address: string,
   phone: string | null,
 ): Promise<string | null> {
-  const key = process.env["SCRAPEGRAPH_API_KEY"];
-  if (!key) return null;
-  try {
-    const digits = phone ? phone.replace(/\D/g, "") : "";
-    const phonePart = phone ? `, phone number "${phone}"${digits ? ` (${digits})` : ""}` : "";
-    const res = await fetch("https://api.scrapegraphai.com/v1/searchscraper", {
-      method: "POST",
-      signal: AbortSignal.timeout(60_000),
-      headers: { "SGAI-APIKEY": key, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        user_prompt: `Find ALL public contact email addresses of the business "${name}" located at ${address}${phonePart}, including business-domain emails and personal inboxes (Gmail, Yahoo, Outlook, etc.). Check its website, Facebook page, Instagram bio, TikTok, LinkedIn, X/Twitter, link-in-bio pages, directories and listings. Return every distinct email that belongs to this business as a list; return an empty list if none.`,
-        num_results: 5,
-        output_schema: {
-          type: "object",
-          properties: { emails: { type: "array", items: { type: "string" } } },
-        },
-      }),
-    });
-    if (!res.ok) {
-      console.error(`ScrapeGraph failed [${res.status}]: ${(await res.text()).slice(0, 300)}`);
-      return null;
-    }
-    const json = await res.json();
-    const emails = extractEmails(JSON.stringify(json?.result ?? json));
-    return emails.length ? emails.join(", ") : null;
-  } catch (e) {
-    console.error("ScrapeGraph email lookup failed", e);
-    return null;
+  const city = address.split(",").slice(-2).join(",").trim();
+  const found = new Set<string>();
+  const queries = [
+    `"${name}" ${city} email`,
+    `"${name}" ${city} gmail OR yahoo OR outlook OR hotmail`,
+  ];
+  if (phone) queries.push(`"${phone}" email`);
+  const serp = await Promise.all(queries.map(findEmailsViaSerp));
+  serp.flat().forEach((e) => found.add(e));
+  if (found.size === 0) {
+    (await findEmailsViaScrapeGraphV2(`${name} ${city} contact email instagram facebook`)).forEach((e) => found.add(e));
   }
+  const list = Array.from(found).slice(0, 10);
+  return list.length ? list.join(", ") : null;
 }
 
 
