@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Copy, ExternalLink, Trash2, Download, ArrowUpDown, Search as SearchIcon, Mail, AtSign, Loader2 } from "lucide-react";
 
-import { deleteLeads, findEmailsForLeads, findPersonalEmailsForLeads, listLeads } from "@/lib/leads.functions";
+import { deleteLeads, findEmailsForLeads, listLeads } from "@/lib/leads.functions";
 import { exportCSV, exportXLSX, type LeadRow } from "@/lib/export";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,7 +25,6 @@ function LeadsPage() {
   const fn = useServerFn(listLeads);
   const delFn = useServerFn(deleteLeads);
   const findFn = useServerFn(findEmailsForLeads);
-  const findPersonalFn = useServerFn(findPersonalEmailsForLeads);
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ["leads"], queryFn: () => fn() });
 
@@ -97,11 +96,10 @@ function LeadsPage() {
 
   const selectedRows = filtered.filter((r) => selected.has(r.id));
   const selectedMissing = selectedRows.filter((r) => !r.email);
-  const selectedMissingPersonal = selectedRows.filter((r) => !r.personal_email);
 
   const [findingIds, setFindingIds] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const runLookup = async (ids: string[], kind: "business" | "personal") => {
+  const findEmails = async (ids: string[]) => {
     if (ids.length === 0) return toast.error("Select leads without an email first");
     setFindingIds((p) => new Set([...p, ...ids]));
     setProgress({ done: 0, total: ids.length });
@@ -110,9 +108,7 @@ function LeadsPage() {
       for (let i = 0; i < ids.length; i += 5) {
         const chunk = ids.slice(i, i + 5);
         try {
-          const r = kind === "business"
-            ? await findFn({ data: { ids: chunk } })
-            : await findPersonalFn({ data: { ids: chunk } });
+          const r = await findFn({ data: { ids: chunk } });
           found += r.found;
         } catch (e) {
           toast.error((e as Error).message);
@@ -125,14 +121,11 @@ function LeadsPage() {
         setProgress({ done: Math.min(i + chunk.length, ids.length), total: ids.length });
         qc.invalidateQueries({ queryKey: ["leads"] });
       }
-      const label = kind === "business" ? "email" : "personal email";
-      toast.success(`Found ${found} ${label}${found === 1 ? "" : "s"} for ${ids.length} lead${ids.length === 1 ? "" : "s"}`);
+      toast.success(`Found emails for ${found}${found === 1 ? "" : "s"} for ${ids.length} lead${ids.length === 1 ? "" : "s"}`);
     } finally {
       setProgress(null);
     }
   };
-  const findEmails = (ids: string[]) => runLookup(ids, "business");
-  const findPersonal = (ids: string[]) => runLookup(ids, "personal");
 
   const doExport = (kind: "csv" | "xlsx") => {
     const rows = selectedRows.length > 0 ? selectedRows : filtered;
@@ -180,17 +173,6 @@ function LeadsPage() {
             )}
           </Button>
           <Button
-            variant="secondary"
-            disabled={selectedMissingPersonal.length === 0 || progress !== null}
-            onClick={() => findPersonal(selectedMissingPersonal.map((r) => r.id))}
-          >
-            {progress ? (
-              <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Finding {progress.done}/{progress.total}</>
-            ) : (
-              <><AtSign className="h-4 w-4 mr-2" /> Find personal {selectedMissingPersonal.length > 0 && `(${selectedMissingPersonal.length})`}</>
-            )}
-          </Button>
-          <Button
             variant="destructive"
             disabled={selected.size === 0 || delMut.isPending}
             onClick={() => delMut.mutate(Array.from(selected))}
@@ -233,7 +215,6 @@ function LeadsPage() {
                   <TableHead>Address</TableHead>
                   <TableHead>Phone</TableHead>
                   <TableHead>Email</TableHead>
-                  <TableHead>Personal email</TableHead>
                   <TableHead>
                     <button className="inline-flex items-center gap-1" onClick={() => changeSort("rating")}>
                       Rating <ArrowUpDown className="h-3 w-3" />
@@ -255,7 +236,7 @@ function LeadsPage() {
               <TableBody>
                 {pageRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center text-muted-foreground py-10">
+                    <TableCell colSpan={9} className="text-center text-muted-foreground py-10">
                       {isLoading ? "Loading…" : "No leads yet. Run a search to get started."}
                     </TableCell>
                   </TableRow>
@@ -272,8 +253,8 @@ function LeadsPage() {
                       <TableCell className="max-w-[280px] truncate">{r.address}</TableCell>
                       <TableCell>{r.phone ?? "—"}</TableCell>
                       <TableCell className="max-w-[220px] truncate">
-                        {r.email ? (
-                          r.email
+                        {r.email || r.personal_email ? (
+                          [r.email, r.personal_email].filter(Boolean).join(", ")
                         ) : (
                           <Button
                             variant="outline"
