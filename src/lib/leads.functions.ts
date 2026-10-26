@@ -170,7 +170,7 @@ async function findEmailsViaScrapeGraphV2(query: string): Promise<string[]> {
       method: "POST",
       signal: AbortSignal.timeout(45_000),
       headers: { "SGAI-APIKEY": key, "Content-Type": "application/json" },
-      body: JSON.stringify({ query, numResults: 5 }),
+      body: JSON.stringify({ query, numResults: 15 }),
     });
     if (!res.ok) {
       console.error(`ScrapeGraph v2 failed [${res.status}]: ${(await res.text()).slice(0, 300)}`);
@@ -187,18 +187,21 @@ async function findEmailViaScrapeGraph(
   name: string,
   address: string,
   phone: string | null,
+  website: string | null = null,
 ): Promise<string | null> {
   const city = address.split(",").slice(-2).join(",").trim();
+  const site = website ? website.replace(/^https?:\/\//, "").replace(/\/.*$/, "") : "";
   const found = new Set<string>();
   const queries = [
     `"${name}" ${city} email`,
     `"${name}" ${city} gmail OR yahoo OR outlook OR hotmail`,
   ];
   if (phone) queries.push(`"${phone}" email`);
+  if (site) queries.push(`"@${site}" OR site:${site} email`);
   const serp = await Promise.all(queries.map(findEmailsViaSerp));
   serp.flat().forEach((e) => found.add(e));
   if (found.size === 0) {
-    (await findEmailsViaScrapeGraphV2(`${name} ${city} contact email instagram facebook`)).forEach((e) => found.add(e));
+    (await findEmailsViaScrapeGraphV2(`${name} ${city}${site ? ` ${site}` : ""} contact email instagram facebook`)).forEach((e) => found.add(e));
   }
   const list = Array.from(found).slice(0, 10);
   return list.length ? list.join(", ") : null;
@@ -211,7 +214,7 @@ export const findEmailsForLeads = createServerFn({ method: "POST" })
     const supabase = await getAdmin();
     const { data: rows, error } = await supabase
       .from("leads")
-      .select("id, business_name, address, phone, email")
+      .select("id, business_name, address, phone, email, website")
       .in("id", data.ids);
     if (error) throw new Error("Could not load the selected leads.");
     const results = await Promise.all(
@@ -219,7 +222,7 @@ export const findEmailsForLeads = createServerFn({ method: "POST" })
         if (r.email) return { id: r.id, email: r.email as string | null };
         let email: string | null = null;
           try {
-            email = await findEmailViaScrapeGraph(r.business_name, r.address ?? "", r.phone ?? null);
+            email = await findEmailViaScrapeGraph(r.business_name, r.address ?? "", r.phone ?? null, r.website ?? null);
           } catch (e) {
           console.error("Email lookup failed", e);
         }
