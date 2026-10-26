@@ -196,10 +196,9 @@ export const findEmailsForLeads = createServerFn({ method: "POST" })
       (rows ?? []).map(async (r) => {
         if (r.email) return { id: r.id, email: r.email as string | null };
         let email: string | null = null;
-        try {
-          email = await findEmailViaScrapeGraph(r.business_name, r.address ?? "", r.phone ?? null);
-          if (!email) email = await findEmailViaWebSearch(r.business_name, r.address ?? "");
-        } catch (e) {
+          try {
+            email = await findEmailViaScrapeGraph(r.business_name, r.address ?? "", r.phone ?? null);
+          } catch (e) {
           console.error("Email lookup failed", e);
         }
         if (email) await supabase.from("leads").update({ email }).eq("id", r.id);
