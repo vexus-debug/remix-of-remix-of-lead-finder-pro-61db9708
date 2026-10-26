@@ -203,8 +203,39 @@ async function findEmailViaScrapeGraph(
   if (found.size === 0) {
     (await findEmailsViaScrapeGraphV2(`${name} ${city}${site ? ` ${site}` : ""} contact email instagram facebook`)).forEach((e) => found.add(e));
   }
-  const list = Array.from(found).slice(0, 10);
+  const list = await filterDeliverable(Array.from(found).slice(0, 10));
   return list.length ? list.join(", ") : null;
+}
+
+// Free check: keep only emails whose domain has working mail servers (MX records), via DNS-over-HTTPS.
+const mxCache = new Map<string, boolean>();
+async function domainAcceptsMail(domain: string): Promise<boolean> {
+  if (mxCache.has(domain)) return mxCache.get(domain)!;
+  let ok = true; // fail open if DNS lookup itself errors
+  try {
+    const res = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(domain)}&type=MX`, {
+      headers: { accept: "application/dns-json" },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (res.ok) {
+      const j = await res.json();
+      ok = j.Status === 0 && Array.isArray(j.Answer) && j.Answer.some((a: { type: number; data: string }) => a.type === 15 && !/^0\s+\.$/.test(a.data));
+    }
+  } catch {
+    // keep ok = true
+  }
+  mxCache.set(domain, ok);
+  return ok;
+}
+
+async function filterDeliverable(emails: string[]): Promise<string[]> {
+  const checks = await Promise.all(
+    emails.map(async (e) => {
+      const domain = e.split("@")[1];
+      return domain && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain) && (await domainAcceptsMail(domain.toLowerCase())) ? e : null;
+    }),
+  );
+  return checks.filter((e): e is string => !!e);
 }
 
 
