@@ -182,42 +182,6 @@ async function findEmailViaScrapeGraph(
   }
 }
 
-// Web-search fallback for businesses without a website (or where the site
-// shows no email): searches the web for the business name + address and
-// extracts any published email from the result excerpts.
-async function findEmailViaWebSearch(name: string, address: string): Promise<string | null> {
-  const lovableKey = process.env["LOVABLE_API_KEY"];
-  const parallelKey = process.env["PARALLEL_API_KEY"];
-  if (!lovableKey || !parallelKey) return null;
-  try {
-    const res = await fetch("https://connector-gateway.lovable.dev/parallel/v1/search", {
-      method: "POST",
-      signal: AbortSignal.timeout(15_000),
-      headers: {
-        Authorization: `Bearer ${lovableKey}`,
-        "X-Connection-Api-Key": parallelKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        objective: `Find the public contact email address of the business "${name}" located at ${address}`,
-        search_queries: [`${name} ${address} email`, `${name} contact email`],
-        mode: "fast",
-        advanced_settings: { max_results: 5 },
-      }),
-    });
-    if (!res.ok) {
-      console.error(`Parallel search failed [${res.status}]: ${(await res.text()).slice(0, 300)}`);
-      return null;
-    }
-    const json = (await res.json()) as { results?: Array<{ excerpts?: string[]; title?: string }> };
-    const text = (json.results ?? []).flatMap((r) => r.excerpts ?? []).join("\n");
-    const emails = extractEmails(text);
-    return emails[0] ?? null;
-  } catch (e) {
-    console.error("Parallel email lookup failed", e);
-    return null;
-  }
-}
 
 export const findEmailsForLeads = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ ids: z.array(z.string().uuid()).min(1).max(10) }).parse(d))
@@ -232,10 +196,9 @@ export const findEmailsForLeads = createServerFn({ method: "POST" })
       (rows ?? []).map(async (r) => {
         if (r.email) return { id: r.id, email: r.email as string | null };
         let email: string | null = null;
-        try {
-          email = await findEmailViaScrapeGraph(r.business_name, r.address ?? "", r.phone ?? null);
-          if (!email) email = await findEmailViaWebSearch(r.business_name, r.address ?? "");
-        } catch (e) {
+          try {
+            email = await findEmailViaScrapeGraph(r.business_name, r.address ?? "", r.phone ?? null);
+          } catch (e) {
           console.error("Email lookup failed", e);
         }
         if (email) await supabase.from("leads").update({ email }).eq("id", r.id);
