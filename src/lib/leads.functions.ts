@@ -121,7 +121,7 @@ function extractEmails(html: string): string[] {
     const e = raw.toLowerCase();
     if (!EMAIL_BLACKLIST.test(e)) found.add(e);
   }
-  return Array.from(found).slice(0, 3);
+  return Array.from(found).slice(0, 10);
 }
 
 async function scrapeEmailsFromWebsite(website: string): Promise<string | null> {
@@ -137,7 +137,7 @@ async function scrapeEmailsFromWebsite(website: string): Promise<string | null> 
       if (!res.ok) continue;
       const html = await res.text();
       const emails = extractEmails(html);
-      if (emails.length > 0) return emails[0];
+      if (emails.length > 0) return emails.join(", ");
     } catch {
       // site unreachable — try next candidate
     }
@@ -158,14 +158,14 @@ async function findEmailViaScrapeGraph(
     const phonePart = phone ? `, phone number "${phone}"${digits ? ` (${digits})` : ""}` : "";
     const res = await fetch("https://api.scrapegraphai.com/v1/searchscraper", {
       method: "POST",
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(60_000),
       headers: { "SGAI-APIKEY": key, "Content-Type": "application/json" },
       body: JSON.stringify({
-        user_prompt: `Find the public contact email address of the business "${name}" located at ${address}${phonePart}. Search directories, Facebook, Instagram and other pages that list this phone number. Return only an email that belongs to this business.`,
-        num_results: 3,
+        user_prompt: `Find ALL public contact email addresses of the business "${name}" located at ${address}${phonePart}, including business-domain emails and personal inboxes (Gmail, Yahoo, Outlook, etc.). Check its website, Facebook page, Instagram bio, TikTok, LinkedIn, X/Twitter, link-in-bio pages, directories and listings. Return every distinct email that belongs to this business as a list; return an empty list if none.`,
+        num_results: 5,
         output_schema: {
           type: "object",
-          properties: { email: { type: ["string", "null"] } },
+          properties: { emails: { type: "array", items: { type: "string" } } },
         },
       }),
     });
@@ -175,7 +175,7 @@ async function findEmailViaScrapeGraph(
     }
     const json = await res.json();
     const emails = extractEmails(JSON.stringify(json?.result ?? json));
-    return emails[0] ?? null;
+    return emails.length ? emails.join(", ") : null;
   } catch (e) {
     console.error("ScrapeGraph email lookup failed", e);
     return null;
@@ -210,25 +210,28 @@ export const findEmailsForLeads = createServerFn({ method: "POST" })
 
 // ScrapeGraphAI lookup tuned for personal inboxes (Gmail/Yahoo/Outlook etc.)
 // publicly connected to the business's Google Maps phone number.
+const PERSONAL_DOMAINS = /@(gmail|googlemail|yahoo|ymail|outlook|hotmail|live|msn|icloud|me|aol|proton|protonmail|zoho|gmx|mail|yandex)\./i;
+
 async function findPersonalEmailViaScrapeGraph(
   name: string,
   address: string,
   phone: string | null,
 ): Promise<string | null> {
   const key = process.env["SCRAPEGRAPH_API_KEY"];
-  if (!key || !phone) return null;
-  const digits = phone.replace(/\D/g, "");
+  if (!key) return null;
+  const digits = phone ? phone.replace(/\D/g, "") : "";
+  const phonePart = phone ? ` or the phone number "${phone}"${digits ? ` (${digits})` : ""}` : "";
   try {
     const res = await fetch("https://api.scrapegraphai.com/v1/searchscraper", {
       method: "POST",
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(60_000),
       headers: { "SGAI-APIKEY": key, "Content-Type": "application/json" },
       body: JSON.stringify({
-        user_prompt: `Find any personal email address (such as Gmail, Yahoo or Outlook) publicly connected to the phone number "${phone}"${digits ? ` (${digits})` : ""} belonging to the business "${name}" located at ${address}. Look at Facebook pages, directories, listings and other public pages that mention this phone number. Return a personal email address if one is publicly listed; otherwise return null.`,
-        num_results: 3,
+        user_prompt: `Find ALL personal email addresses (Gmail, Yahoo, Outlook, Hotmail, iCloud, AOL, Proton and similar) publicly connected to the business "${name}" located at ${address}${phonePart}. Check the business's Facebook page, Instagram bio, TikTok, LinkedIn, X/Twitter, WhatsApp listings, link-in-bio pages, directories and listings. Return every distinct personal email found as a list; return an empty list if none.`,
+        num_results: 5,
         output_schema: {
           type: "object",
-          properties: { email: { type: ["string", "null"] } },
+          properties: { emails: { type: "array", items: { type: "string" } } },
         },
       }),
     });
@@ -237,8 +240,8 @@ async function findPersonalEmailViaScrapeGraph(
       return null;
     }
     const json = await res.json();
-    const emails = extractEmails(JSON.stringify(json?.result ?? json));
-    return emails[0] ?? null;
+    const emails = extractEmails(JSON.stringify(json?.result ?? json)).filter((e) => PERSONAL_DOMAINS.test(e));
+    return emails.length ? emails.join(", ") : null;
   } catch (e) {
     console.error("ScrapeGraph personal email lookup failed", e);
     return null;
